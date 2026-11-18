@@ -171,4 +171,3 @@ def update_data():
 
 data_update = update_data()
 
-ModuleNotFoundError
