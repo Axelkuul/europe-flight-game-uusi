@@ -1,5 +1,3 @@
-
-
 from flask import Flask, render_template
 import threading
 from geopy.distance import geodesic
