@@ -1,145 +1,213 @@
 
+
+from flask import Flask, render_template
+import threading
 from geopy.distance import geodesic
-import mysql.connector 
+import mysql.connector
 import random
+
+app = Flask(__name__)
+
+# --------------------------------
+# DATABASE SETTINGS
+# --------------------------------
+
+DB_CONFIG = {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": "Leosaa07",
+    "database": "europe_airport_game"
+}
+
+
+def create_connection():
+    return mysql.connector.connect(**DB_CONFIG)
 
 
 try:
-    connection = mysql.connector.connect(
-        host='',
-        port=3306,
-        user='',
-        password='',
-        database='Peli.projekti',
-        #ssl_ca=r'',
-        #ssl_verify_cert=True,
-    )
-
+    connection = create_connection()
+    cursor = connection.cursor()
     print("CONNECTED!")
-
 
 except mysql.connector.Error as error:
     print("MYSQL ERROR:")
     print(error)
+    raise
 
-cursor = connection.cursor()
-#MAIN PROGRAM GAME CODE BEGINS HERE:
 
-#--------------------------------
-#CHECK USERNAME
-#--------------------------------
+# --------------------------------
+# FLASK LEADERBOARD
+# --------------------------------
+
+@app.route("/")
+def leaderboard():
+
+    web_connection = None
+    web_cursor = None
+
+    try:
+        web_connection = create_connection()
+        web_cursor = web_connection.cursor()
+
+        web_cursor.execute("""
+            SELECT
+                screen_name,
+                Goal_points,
+                Flights_completed,
+                distance
+            FROM player
+            ORDER BY Goal_points DESC
+            LIMIT 15
+        """)
+
+        players = web_cursor.fetchall()
+
+        return render_template(
+            "leaderboard.html",
+            scores=players
+        )
+
+    except mysql.connector.Error as error:
+        return f"Database error: {error}", 500
+
+    finally:
+        if web_cursor:
+            web_cursor.close()
+
+        if web_connection and web_connection.is_connected():
+            web_connection.close()
+
+
+def start_website():
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=False,
+        use_reloader=False
+    )
+
+
+# --------------------------------
+# CHECK USERNAME
+# --------------------------------
 
 def get_username(username):
-        
+
     cursor.execute(
-        "SELECT id FROM player WHERE id = %s", 
+        "SELECT id FROM player WHERE id = %s",
         (username,)
     )
 
-    result = cursor.fetchone()
-    if result:
-        return True
-    else:
-        return False
+    return cursor.fetchone() is not None
 
-        
-#------------------------------
-#Get 4 airports from database execpt the current location of player
-#--------------------------
+
+# --------------------------------
+# GET 4 AIRPORTS
+# --------------------------------
 
 def hae_lentokentat(current_airport):
-    cursor.execute(""" 
-    SELECT name, ident FROM airport WHERE type = 'large_airport' and continent = 'EU' and ident != %s
+
+    cursor.execute("""
+        SELECT name, ident
+        FROM airport
+        WHERE type = 'large_airport'
+        AND continent = 'EU'
+        AND ident != %s
     """, (current_airport,))
 
     lentokentat = cursor.fetchall()
 
-    return random.sample(lentokentat, 4)
-    
-#Starting the distance
-#Initial point is always Vaclav Havel Airport Parague icao code = "LKPR"
-#--------------------------
-#Calculate distance
-#------------------------
+    if len(lentokentat) < 4:
+        raise ValueError("Not enough airports found in database.")
 
+    return random.sample(lentokentat, 4)
+
+
+# --------------------------------
+# FIND AIRPORT COORDINATES
+# --------------------------------
 
 def find_destination(destination):
-    
-    sql = f"Select latitude_deg, longitude_deg from airport where ident = '{destination}'; "
-    cursor.execute(sql)
+
+    cursor.execute("""
+        SELECT latitude_deg, longitude_deg
+        FROM airport
+        WHERE ident = %s
+    """, (destination,))
+
     result = cursor.fetchone()
+
+    if result is None:
+        raise ValueError(f"Airport not found: {destination}")
+
     return result
 
-#----------------------------
-#Calculate the distance between current_location and destinaton
-#--------------------------
+
+# --------------------------------
+# CALCULATE DISTANCE
+# --------------------------------
 
 def calculate_distance(departure, destination):
-    distance = geodesic(departure, destination).kilometers
-    return distance
 
-#-------------------------------
-#Calculate fuel
-#------------------------------
-#Now we calculate the total fuel consumed and total co2 consumed
-# 1liters of fuel = 1km
-# 1liters 0.5 kg of co2
+    return geodesic(departure, destination).kilometers
 
+
+# --------------------------------
+# CALCULATE FUEL
+# --------------------------------
 
 def fuel_consumed(distance, weather):
 
     fuel = distance
-    if weather == "Cloudy":
 
-        fuel = fuel * 1.05
+    if weather == "Cloudy":
+        fuel *= 1.05
 
     elif weather == "Storm":
-
-        fuel = fuel * 1.15
+        fuel *= 1.15
 
     return fuel
 
 
-#-----------------------
-#Calculate co2
-#-----------------
+# --------------------------------
+# CALCULATE CO2
+# --------------------------------
 
 def co2_consumed(fuel):
-    co2 = fuel * 0.5
-    return co2
 
-#------------------------------------------------------------
-#This function calculates the points and also add bonus points according to the carbon emission when it is less.
-#--------------------------------------------------
+    return fuel * 0.5
+
+
+# --------------------------------
+# CALCULATE POINTS
+# --------------------------------
 
 def calculate_points(distance, co2):
 
     if co2 <= 500:
-
         points = distance * 0.1 + 20
 
     elif co2 <= 1000:
-
         points = distance * 0.1
 
     else:
-
         points = distance * 0.1 - 10
 
     return points
 
 
-#---------------------------------------------------
-#This function updates the data to the database
-#.-----------------------------------------
+# --------------------------------
+# UPDATE DATABASE
+# --------------------------------
 
 def update_data(
-        username,
-        destination,
-        distance,
-        fuel,
-        co2,
-        points
+    username,
+    destination,
+    distance,
+    fuel,
+    co2,
+    points
 ):
 
     cursor.execute("""
@@ -149,14 +217,10 @@ def update_data(
             Destination = %s,
             distance = distance + %s,
             Total_fuel = Total_fuel - %s,
-            Total_fuel_consumed =
-                Total_fuel_consumed + %s,
-            Co2_consumed =
-                Co2_consumed + %s,
-            Goal_points =
-                Goal_points + %s,
-            Flights_completed =
-                Flights_completed + 1
+            Total_fuel_consumed = Total_fuel_consumed + %s,
+            Co2_consumed = Co2_consumed + %s,
+            Goal_points = Goal_points + %s,
+            Flights_completed = Flights_completed + 1
         WHERE id = %s
     """, (
         destination,
@@ -171,6 +235,10 @@ def update_data(
 
     connection.commit()
 
+
+# --------------------------------
+# REFILL FUEL
+# --------------------------------
 
 def refill_fuel(username):
 
@@ -192,12 +260,13 @@ def refill_fuel(username):
 
         return True
 
-    else:
+    print("\nYou do not have enough points.")
+    return False
 
-        print("\nYou do not have enough points.")
 
-        return False
-
+# --------------------------------
+# SHOW PLAYER
+# --------------------------------
 
 def show_player(username):
 
@@ -216,19 +285,26 @@ def show_player(username):
 
     player = cursor.fetchone()
 
+    if player is None:
+        raise ValueError("Player not found.")
+
     print("\n")
     print("------------------------------")
     print("PLAYER INFORMATION")
     print("------------------------------")
 
     print("Current airport:", player[0])
-    print("Fuel remaining:", round(player[1], 2), "litres")
-    print("Fuel consumed:", round(player[2], 2), "litres")
-    print("CO2 produced:", round(player[3], 2), "kg")
-    print("Points:", round(player[4], 2))
+    print("Fuel remaining:", round(player[1] or 0, 2), "litres")
+    print("Fuel consumed:", round(player[2] or 0, 2), "litres")
+    print("CO2 produced:", round(player[3] or 0, 2), "kg")
+    print("Points:", round(player[4] or 0, 2))
     print("Flights completed:", player[5])
-    print("Total distance:", round(player[6], 2), "km")    
+    print("Total distance:", round(player[6] or 0, 2), "km")
 
+
+# --------------------------------
+# SHOW CONSOLE LEADERBOARD
+# --------------------------------
 
 def show_leaderboard():
 
@@ -240,7 +316,7 @@ def show_leaderboard():
             distance
         FROM player
         ORDER BY Goal_points DESC
-        limit 15
+        LIMIT 15
     """)
 
     players = cursor.fetchall()
@@ -250,190 +326,191 @@ def show_leaderboard():
     print("        LEADERBOARD")
     print("==============================")
 
-    number = 1
-
-    for player in players:
+    for number, player in enumerate(players, start=1):
 
         print(
             number,
             player[0],
             "-",
-            round(player[1], 2),
+            round(player[1] or 0, 2),
             "points",
             "-",
             player[2],
             "flights",
             "-",
-            round(player[3] or 0,  2),
+            round(player[3] or 0, 2),
             "km"
         )
-
-        number = number + 1
 
     print("==============================")
 
 
+# --------------------------------
+# START WEBSITE IN BACKGROUND
+# --------------------------------
 
-#-------------------------------
-#Actual Game
-#-------------------------------
+web_thread = threading.Thread(
+    target=start_website,
+    daemon=True
+)
 
-username = input("Enter your username \nNote:User name should be unique: ")
+web_thread.start()
+
+
+# --------------------------------
+# ACTUAL GAME
+# --------------------------------
+
+username = input(
+    "Enter your username\nNote: User name should be unique: "
+)
 
 if get_username(username):
-    print("Welcome back")
+
+    print("Welcome back!")
 
 else:
+
     print("New player!")
     screen_name = input("Enter your name: ")
 
-    #LFPK is the starting airport
-    #This stores the new players information in the database if there is no record before
     cursor.execute("""
-    Insert into player (id, screen_name, current_airport
-    )
-    values (%s, %s , %s)""",(
+        INSERT INTO player (
+            id,
+            screen_name,
+            current_airport
+        )
+        VALUES (%s, %s, %s)
+    """, (
         username,
         screen_name,
         "LFPK"
     ))
+
     connection.commit()
 
-    print("Player created succesfully")
+    print("Player created successfully.")
     print("Starting GAME EUROPE AIRPORT SIMULATOR.")
     print("======================")
-    print("Starting game from the 'LFPK' airport in cheque republic. ")
+    print("Starting game from LFPK airport.")
 
-#------------------------------
-# GAME LOOP STARTS FROM HERE
+
+# --------------------------------
+# GAME LOOP
 # --------------------------------
 
 while True:
+
     cursor.execute("""
-    Select
-        current_airport,
-        Total_fuel,
-        Total_fuel_consumed,
-        Co2_consumed,
-        Goal_points,
-        Flights_completed,
-        distance,
-        Co2_Max
-    From player
-    where id = %s""", (username,))
+        SELECT
+            current_airport,
+            Total_fuel,
+            Total_fuel_consumed,
+            Co2_consumed,
+            Goal_points,
+            Flights_completed,
+            distance,
+            Co2_Max
+        FROM player
+        WHERE id = %s
+    """, (username,))
 
     player = cursor.fetchone()
 
-    current_airport = player[0]
-    total_fuel = player[1]
-    total_fuel_consumed = player[2]
-    total_co2 = player[3]
-    points = player[4]
-    flights = player[5]
-    total_distance = player[6]
-    maximun_co2_limit = player[7]
+    if player is None:
+        print("Player not found.")
+        break
 
+    current_airport = player[0]
+    total_fuel = player[1] or 0
+    total_fuel_consumed = player[2] or 0
+    total_co2 = player[3] or 0
+    points = player[4] or 0
+    flights = player[5] or 0
+    total_distance = player[6] or 0
+    maximum_co2_limit = player[7]
 
     show_player(username)
 
+    # CHECK WINNING CONDITION
 
-    if points >= 500 and total_co2 < maximun_co2_limit:
+    if points >= 500 and total_co2 < maximum_co2_limit:
 
         print("\n==============================")
         print("       CONGRATULATIONS!")
         print("==============================")
 
-        print("You reached 500 points! and won the game.")
-
-        print(
-            "Flights completed:",
-            flights
-        )
-
-        print(
-            "Total distance:",
-            round(total_distance, 2),
-            "km"
-        )
-
-        print(
-            "Total fuel consumed:",
-            round(total_fuel_consumed, 2),
-            "litres"
-        )
-
-        print(
-            "Total CO2 produced:",
-            round(total_co2, 2),
-            "kg"
-        )
-
-        print(
-            "Final points:",
-            round(points, 2)
-        )
+        print("You reached 500 points and won the game.")
+        print("Flights completed:", flights)
+        print("Total distance:", round(total_distance, 2), "km")
+        print("Total fuel consumed:", round(total_fuel_consumed, 2), "litres")
+        print("Total CO2 produced:", round(total_co2, 2), "kg")
+        print("Final points:", round(points, 2))
 
         show_leaderboard()
-
         break
-    elif total_co2 >= maximun_co2_limit:
+
+    elif total_co2 >= maximum_co2_limit:
+
         print("Caught By the Activists.")
         break
 
+    # GET AIRPORTS
 
-    #We get airports using hae_lentokennat function
+    airports = hae_lentokentat(current_airport)
 
-    airports = hae_lentokentat(
-        current_airport
-    )
+    print("\nChoose your destination Airport:")
 
-    print("\nChoose your destination Airport: ")
-
-    for i in range(len(airports)):
+    for i, airport in enumerate(airports, start=1):
 
         print(
-            i + 1,
-            airports[i][0],
-            "(" + airports[i][1] + ")"
+            i,
+            airport[0],
+            "(" + airport[1] + ")"
         )
+
     print("5. Show leaderboard")
     print("6. Quit")
 
     choice = input("Choose an option from 1 - 6: ")
 
-
     if choice == "5":
+
         show_leaderboard()
         continue
+
     if choice == "6":
-        print("Game is quited:")
-        print(f"You have completed {flights} flights.")   
+
+        print("Game is quit.")
+        print(f"You have completed {flights} flights.")
         break
 
     if not choice.isdigit():
-        print("Please inter a number from 1 - 6:")
+
+        print("Please enter a number from 1 - 6.")
         continue
 
     choice = int(choice)
 
     if choice < 1 or choice > 4:
-        print("Invalid choice")
 
+        print("Invalid choice.")
+        continue
 
-    #Here a player can select his her destination"
-    destination = airports[choice -1]
+    # SELECT DESTINATION
+
+    destination = airports[choice - 1]
+
     destination_name = destination[0]
     destination_ident = destination[1]
 
-    #We get cordinates using the find destination function and ident of the airport
-
     departure_coordinates = find_destination(current_airport)
-    destination_airport = find_destination(destination_ident)
+    destination_coordinates = find_destination(destination_ident)
 
-
-    # caculate_distance between current airport and the destination airport using the coordinates and geodesic
-
-    distance  = calculate_distance(departure_coordinates, destination_airport)
+    distance = calculate_distance(
+        departure_coordinates,
+        destination_coordinates
+    )
 
     weather = random.choice([
         "Clear",
@@ -441,17 +518,9 @@ while True:
         "Storm"
     ])
 
-    #Now next step is to calculate the fuel using distance and weather with function fuel consumed
-
     fuel = fuel_consumed(distance, weather)
 
-
-    #Now calculate the co2_consumed using the fuel and co2_consumed function
-
     co2 = co2_consumed(fuel)
-
-    #Now we calculate points using the distance and the bonus point as we consider sustainable development
-    #Or we promote "kestävä kehitys". This features promote the player to get bonus point for less co2 emission
 
     flight_points = calculate_points(distance, co2)
 
@@ -470,27 +539,18 @@ while True:
 
     print("==============================")
 
+    # CHECK FUEL
+
     if total_fuel < fuel:
 
         print("\nYou don't have enough fuel.")
 
-        print(
-            "Fuel available:",
-            round(total_fuel, 2),
-            "litres"
-        )
-
-        print(
-            "Fuel needed:",
-            round(fuel, 2),
-            "litres"
-        )
-
+        print("Fuel available:", round(total_fuel, 2), "litres")
+        print("Fuel needed:", round(fuel, 2), "litres")
 
         refill = input(
             "\nBuy 2000 litres for 20 points? (y/n): "
         )
-
 
         if refill.lower() == "y":
 
@@ -504,17 +564,19 @@ while True:
         else:
 
             print("Flight cancelled.")
+            continue
 
-            continue 
+    # CONFIRM FLIGHT
 
     fly = input("\nDo you want to take this flight (y/n): ")
+
     if fly.lower() != "y":
-        print("Flight is Cancelled.")
+
+        print("Flight is cancelled.")
         continue
 
-    #------------------------------
-    #Now we update the every information of flights to database
-    #--------------------------------------
+    # UPDATE DATABASE
+
     update_data(
         username,
         destination_ident,
@@ -532,22 +594,19 @@ while True:
 
     completed_flights = cursor.fetchone()[0]
 
-
     print("\n==============================")
     print("       FLIGHT COMPLETED")
     print("==============================")
 
-    print(
-        "You earned",
-        round(flight_points, 2),
-        "points."
-    )
-    print(
-        "Flights completed:",
-        completed_flights
-    )
+    print("You earned", round(flight_points, 2), "points.")
+    print("Flights completed:", completed_flights)
+
+
+# --------------------------------
+# CLOSE DATABASE
+# --------------------------------
 
 cursor.close()
-connection.close()    
+connection.close()
 
-
+print("Game ended.")
