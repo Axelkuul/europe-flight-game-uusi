@@ -10,7 +10,7 @@ try:
         port=3306,
         user='',
         password='',
-        database='europe_airport_game',
+        database='Peli.projekti',
         #ssl_ca=r'',
         #ssl_verify_cert=True,
     )
